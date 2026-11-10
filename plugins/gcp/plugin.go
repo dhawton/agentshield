@@ -30,6 +30,8 @@ type Config struct {
 	SourceID      string
 	Compute       ComputeAPI
 	PollInterval  time.Duration
+	// FlowLogs, when set, streams VPC Flow Logs into the telemetry pipeline.
+	FlowLogs FlowLogReceiver
 }
 
 // Plugin is the GCP Compute Engine source plugin for one project.

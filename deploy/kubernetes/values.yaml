@@ -56,6 +56,9 @@ discovery:
     project: ""
     region: ""
     pollInterval: ""
+    # Pub/Sub subscription ID or projects/<project>/subscriptions/<id> fed by
+    # a Logging sink for VPC Flow Logs. Empty disables flow telemetry.
+    flowLogSubscription: ""
 
 telemetry:
   jsonlPath: /var/lib/agentshield/telemetry.jsonl

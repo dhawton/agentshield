@@ -189,6 +189,21 @@ type TelemetryReceiverProvider interface {
 	TelemetryReceivers(telemetry.EventIngestor) ([]TelemetryReceiver, error)
 }
 
+// TelemetryStream is a pull transport owned by a plugin, such as a message
+// queue subscription. The host runs Run until shutdown; Run submits events to
+// the ingestor it was built with, retries provider failures itself, and
+// returns only when ctx ends or on a failure that should stop the process.
+type TelemetryStream struct {
+	Name string
+	Run  func(context.Context) error
+}
+
+// TelemetryStreamProvider lets a plugin register pull telemetry transports
+// with the host's shared telemetry pipeline.
+type TelemetryStreamProvider interface {
+	TelemetryStreams(telemetry.EventIngestor) ([]TelemetryStream, error)
+}
+
 // RemediationProvider is an optional capability extracted independently from a
 // plugin's discovery lifecycle and publication contracts.
 type RemediationProvider interface {

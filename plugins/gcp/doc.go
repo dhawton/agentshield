@@ -45,5 +45,22 @@
 // republishes the last coherent input once with degraded health; recovery
 // restores healthy status.
 //
+// # Flow telemetry
+//
+// With a flow log subscription, the plugin pulls VPC Flow Log entries that a
+// Logging sink routes to Pub/Sub, using StreamingPull with bounded flow
+// control. [NormalizeVPCFlowLog] maps each entry to a network-flow event
+// between network destinations in the reporting side's
+// gcp/<host-project-id>/<network> realm; set --kubernetes-network-id to the
+// same value so Pod addresses join. Records reported by the source are
+// egress and by the destination are ingress, so a flow inside the VPC can
+// appear once from each end. Records without a disposition are allowed.
+// Ingress firewall drops are never logged, and flow logs are sampled, so the
+// packet count is an estimate, the event is marked sampled, and absence of a
+// flow proves nothing. A message is acked only after the telemetry pipeline
+// accepts its event; while the pipeline is full the message is held and its
+// lease extended, and records that cannot be normalized are acked and
+// counted. Raw records stay in the telemetry pipeline, never in the graph.
+//
 // See https://agent-shield.dev/docs/plugins/gcp/.
 package gcp

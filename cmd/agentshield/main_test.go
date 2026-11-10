@@ -268,8 +268,14 @@ func TestParseOptionsValidatesGCPOptions(t *testing.T) {
 	if _, err := parseOptions([]string{"--gcp-project=example", "--gcp-poll-interval=0s"}); err == nil || !strings.Contains(err.Error(), "--gcp-poll-interval") {
 		t.Errorf("zero poll interval error = %v, want a --gcp-poll-interval error", err)
 	}
-	config, err := parseOptions([]string{"--gcp-project=example", "--gcp-region=us-east1", "--gcp-poll-interval=2m"})
-	if err != nil || config.gcp.Project != "example" || config.gcp.Region != "us-east1" {
+	if _, err := parseOptions([]string{"--gcp-flow-log-subscription=flows"}); err == nil || !strings.Contains(err.Error(), "--gcp-project") {
+		t.Errorf("subscription without project error = %v, want a --gcp-project requirement", err)
+	}
+	if _, err := parseOptions([]string{"--gcp-project=example", "--gcp-flow-log-subscription=projects/example/topics/flows"}); err == nil || !strings.Contains(err.Error(), "--gcp-flow-log-subscription") {
+		t.Errorf("malformed subscription error = %v, want a --gcp-flow-log-subscription error", err)
+	}
+	config, err := parseOptions([]string{"--gcp-project=example", "--gcp-region=us-east1", "--gcp-poll-interval=2m", "--gcp-flow-log-subscription=projects/example/subscriptions/flows"})
+	if err != nil || config.gcp.Project != "example" || config.gcp.Region != "us-east1" || config.gcp.FlowLogSubscription != "projects/example/subscriptions/flows" {
 		t.Fatalf("parseOptions = %+v, %v", config.gcp, err)
 	}
 }

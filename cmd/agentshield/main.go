@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/pubsub/v2"
 	"github.com/agentshield-dev/agentshield/internal/version"
 	"github.com/agentshield-dev/agentshield/pkg/api"
 	"github.com/agentshield-dev/agentshield/pkg/detector"
@@ -179,11 +180,15 @@ func runWithArgsOutput(args []string, output io.Writer) error {
 	if err != nil {
 		return err
 	}
+	streams, err := telemetryStreams(plugins, pipeline)
+	if err != nil {
+		return err
+	}
 	detection, err := newDetectionServices(startupContext, config, store)
 	if err != nil {
 		return err
 	}
-	return serve(config, newHTTPServer(config.listen, handler, apiServer.CloseStreams), store, pipeline, manager, detection)
+	return serve(config, newHTTPServer(config.listen, handler, apiServer.CloseStreams), store, pipeline, manager, streams, detection)
 }
 
 // parseOptions registers every command-line flag, resolves model provider
@@ -247,8 +252,12 @@ func parseOptions(args []string) (options, error) {
 		(strings.TrimSpace(config.aws.EventsQueueURL) != "" || strings.TrimSpace(config.aws.FirehoseStreamARN) != "") {
 		return options{}, errors.New("AWS events queue and Firehose options require --aws-region")
 	}
-	if strings.TrimSpace(config.gcp.Project) == "" && strings.TrimSpace(config.gcp.Region) != "" {
-		return options{}, errors.New("--gcp-region requires --gcp-project")
+	if strings.TrimSpace(config.gcp.Project) == "" &&
+		(strings.TrimSpace(config.gcp.Region) != "" || strings.TrimSpace(config.gcp.FlowLogSubscription) != "") {
+		return options{}, errors.New("--gcp-region and --gcp-flow-log-subscription require --gcp-project")
+	}
+	if err := config.gcp.ValidateFlowLogSubscription(); err != nil {
+		return options{}, err
 	}
 	if _, err := config.gcp.PollDuration(); err != nil {
 		return options{}, err
@@ -457,6 +466,29 @@ func newHTTPHandler(config options, store *state.Store, manager *discovery.Manag
 	return mux, apiServer, nil
 }
 
+// telemetryStreams collects the pull transports plugins own, bound to the
+// shared pipeline.
+func telemetryStreams(plugins []discovery.Plugin, pipeline telemetry.EventIngestor) ([]discovery.TelemetryStream, error) {
+	var streams []discovery.TelemetryStream
+	for _, plugin := range plugins {
+		provider, ok := plugin.(discovery.TelemetryStreamProvider)
+		if !ok {
+			continue
+		}
+		provided, err := provider.TelemetryStreams(pipeline)
+		if err != nil {
+			return nil, fmt.Errorf("register telemetry streams for plugin %q: %w", plugin.Descriptor().ID, err)
+		}
+		for _, stream := range provided {
+			if stream.Name == "" || stream.Run == nil {
+				return nil, fmt.Errorf("plugin %q returned an incomplete telemetry stream", plugin.Descriptor().ID)
+			}
+			streams = append(streams, stream)
+		}
+	}
+	return streams, nil
+}
+
 func newAPIServer(config options, store *state.Store, manager *discovery.Manager, otlpReceiver *telemetry.OTLPReceiver) (*api.Server, error) {
 	loopback := loopbackListenAddress(config.listen)
 	if config.ruleReviewAPI && !loopback {
@@ -600,7 +632,7 @@ func newHTTPServer(listen string, handler http.Handler, onShutdown ...func()) *h
 // HTTP server, so no ingest handler is still queueing events when it drains
 // its final batch, and waiting lets that drain finish before run closes the
 // sink and store.
-func serve(config options, httpServer *http.Server, store *state.Store, pipeline *telemetry.Pipeline, manager *discovery.Manager, detection detectionServices) error {
+func serve(config options, httpServer *http.Server, store *state.Store, pipeline *telemetry.Pipeline, manager *discovery.Manager, streams []discovery.TelemetryStream, detection detectionServices) error {
 	signalContext, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	group, ctx := errgroup.WithContext(signalContext)
@@ -612,6 +644,14 @@ func serve(config options, httpServer *http.Server, store *state.Store, pipeline
 		}
 		return nil
 	})
+	for _, stream := range streams {
+		goRecover(group, "telemetry stream "+stream.Name, func() error {
+			if err := stream.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+				return fmt.Errorf("telemetry stream %s: %w", stream.Name, err)
+			}
+			return nil
+		})
+	}
 	if manager != nil {
 		goRecover(group, "discovery manager", func() error {
 			if err := manager.Run(ctx); err != nil && !errors.Is(err, context.Canceled) {
@@ -892,9 +932,21 @@ func gcpDiscoveryPlugin(ctx context.Context, pluginConfig gcpplugin.CLIConfig) (
 	if err != nil {
 		return nil, err
 	}
+	var flowLogs gcpplugin.FlowLogReceiver
+	if subscription := strings.TrimSpace(pluginConfig.FlowLogSubscription); subscription != "" {
+		// The client lives for the process; Receive owns its streams.
+		client, err := pubsub.NewClient(ctx, project.ProjectId)
+		if err != nil {
+			return nil, fmt.Errorf("create GCP Pub/Sub client: %w", err)
+		}
+		flowLogs, err = gcpplugin.NewFlowLogSubscriber(client, subscription)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return gcpplugin.New(gcpplugin.Config{
 		ProjectID: project.ProjectId, ProjectNumber: projectNumber, Region: region, SourceID: sourceID,
-		Compute: gcpplugin.NewComputeAPI(service), PollInterval: pollInterval,
+		Compute: gcpplugin.NewComputeAPI(service), PollInterval: pollInterval, FlowLogs: flowLogs,
 	})
 }
 

@@ -141,3 +141,10 @@ helm upgrade --install agentshield deploy/kubernetes \
 With Workload Identity Federation for GKE you can instead grant the role
 directly to the Kubernetes service account principal and leave
 `serviceAccount.annotations` empty.
+
+To ingest VPC Flow Logs, route `compute.googleapis.com/vpc_flows` with a
+Logging sink to a Pub/Sub topic, create a pull subscription, grant the same
+account `roles/pubsub.subscriber` on it, and set
+`discovery.gcp.flowLogSubscription`. Set `--kubernetes-network-id` to
+`gcp/<host-project-id>/<network>` so flow endpoints join Pod and node
+addresses.
