@@ -137,6 +137,7 @@ plugin makes:
 | `compute.instances.list` | Instances, network interfaces, tags, and service accounts (aggregated list) |
 | `compute.firewalls.list` | VPC firewall rules and their targets |
 | `compute.subnetworks.list` | Subnetwork CIDRs attached to network interfaces (aggregated list) |
+| `pubsub.subscriptions.consume` | Pull asset feed changes (`roles/pubsub.subscriber` on the subscription, only with `assetFeedSubscription`) |
 
 ```bash
 helm upgrade --install agentshield deploy/kubernetes \
@@ -149,3 +150,14 @@ helm upgrade --install agentshield deploy/kubernetes \
 With Workload Identity Federation for GKE you can instead grant the role
 directly to the Kubernetes service account principal and leave
 `serviceAccount.annotations` empty.
+
+To reconcile soon after a change instead of waiting for the next poll, set
+`discovery.gcp.assetFeedSubscription` to a pull subscription on a topic fed
+by a Cloud Asset Inventory feed, and grant the same account
+`roles/pubsub.subscriber` on that subscription. Create the feed yourself with
+`gcloud asset feeds create agentshield --project=example-project
+--pubsub-topic=projects/example-project/topics/agentshield-assets
+--content-type=resource
+--asset-types=compute.googleapis.com/Instance,compute.googleapis.com/Firewall,compute.googleapis.com/Subnetwork`.
+That needs `cloudasset.feeds.create` and the agent does not. A change only
+triggers a full poll, which stays the source of truth.

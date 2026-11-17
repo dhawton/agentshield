@@ -27,6 +27,7 @@ import (
 	"syscall"
 	"time"
 
+	"cloud.google.com/go/pubsub/v2"
 	"github.com/agentshield-dev/agentshield/internal/version"
 	"github.com/agentshield-dev/agentshield/pkg/api"
 	"github.com/agentshield-dev/agentshield/pkg/detector"
@@ -247,8 +248,12 @@ func parseOptions(args []string) (options, error) {
 		(strings.TrimSpace(config.aws.EventsQueueURL) != "" || strings.TrimSpace(config.aws.FirehoseStreamARN) != "") {
 		return options{}, errors.New("AWS events queue and Firehose options require --aws-region")
 	}
-	if strings.TrimSpace(config.gcp.Project) == "" && strings.TrimSpace(config.gcp.Region) != "" {
-		return options{}, errors.New("--gcp-region requires --gcp-project")
+	if strings.TrimSpace(config.gcp.Project) == "" &&
+		(strings.TrimSpace(config.gcp.Region) != "" || strings.TrimSpace(config.gcp.AssetFeedSubscription) != "") {
+		return options{}, errors.New("--gcp-region and --gcp-asset-feed-subscription require --gcp-project")
+	}
+	if err := config.gcp.ValidateAssetFeedSubscription(); err != nil {
+		return options{}, err
 	}
 	if _, err := config.gcp.PollDuration(); err != nil {
 		return options{}, err
@@ -909,9 +914,21 @@ func gcpDiscoveryPlugin(ctx context.Context, pluginConfig gcpplugin.CLIConfig) (
 	if err != nil {
 		return nil, err
 	}
+	var assetFeed gcpplugin.AssetFeedReceiver
+	if subscription := strings.TrimSpace(pluginConfig.AssetFeedSubscription); subscription != "" {
+		// The client lives for the process; Receive owns its streams.
+		client, err := pubsub.NewClient(ctx, project.ProjectId)
+		if err != nil {
+			return nil, fmt.Errorf("create GCP Pub/Sub client: %w", err)
+		}
+		assetFeed, err = gcpplugin.NewAssetFeedSubscriber(client, subscription)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return gcpplugin.New(gcpplugin.Config{
 		ProjectID: project.ProjectId, ProjectNumber: projectNumber, Region: region, SourceID: sourceID,
-		Compute: gcpplugin.NewComputeAPI(service), PollInterval: pollInterval,
+		Compute: gcpplugin.NewComputeAPI(service), PollInterval: pollInterval, AssetFeed: assetFeed,
 	})
 }
 

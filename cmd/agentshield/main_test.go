@@ -222,7 +222,7 @@ func TestPluginCLIFlagsAreNamespacedAndCollisionFree(t *testing.T) {
 	for _, name := range []string{
 		"kubernetes-cluster-id", "istio-cluster-id", "agentgateway-cluster-id", "cilium-cluster-id",
 		"falco-cluster-id", "falco-source-id", "aws-region", "aws-firehose-stream-arn",
-		"gcp-project", "gcp-region", "gcp-poll-interval",
+		"gcp-project", "gcp-region", "gcp-poll-interval", "gcp-asset-feed-subscription",
 	} {
 		if flags.Lookup(name) == nil {
 			t.Errorf("expected plugin-owned flag --%s", name)
@@ -268,8 +268,14 @@ func TestParseOptionsValidatesGCPOptions(t *testing.T) {
 	if _, err := parseOptions([]string{"--gcp-project=example", "--gcp-poll-interval=0s"}); err == nil || !strings.Contains(err.Error(), "--gcp-poll-interval") {
 		t.Errorf("zero poll interval error = %v, want a --gcp-poll-interval error", err)
 	}
-	config, err := parseOptions([]string{"--gcp-project=example", "--gcp-region=us-east1", "--gcp-poll-interval=2m"})
-	if err != nil || config.gcp.Project != "example" || config.gcp.Region != "us-east1" {
+	if _, err := parseOptions([]string{"--gcp-asset-feed-subscription=assets"}); err == nil || !strings.Contains(err.Error(), "--gcp-project") {
+		t.Errorf("asset feed without project error = %v, want a --gcp-project requirement", err)
+	}
+	if _, err := parseOptions([]string{"--gcp-project=example", "--gcp-asset-feed-subscription=projects/p/topics/assets"}); err == nil || !strings.Contains(err.Error(), "--gcp-asset-feed-subscription") {
+		t.Errorf("topic as subscription error = %v, want a --gcp-asset-feed-subscription error", err)
+	}
+	config, err := parseOptions([]string{"--gcp-project=example", "--gcp-region=us-east1", "--gcp-poll-interval=2m", "--gcp-asset-feed-subscription=projects/example/subscriptions/assets"})
+	if err != nil || config.gcp.Project != "example" || config.gcp.Region != "us-east1" || config.gcp.AssetFeedSubscription != "projects/example/subscriptions/assets" {
 		t.Fatalf("parseOptions = %+v, %v", config.gcp, err)
 	}
 }

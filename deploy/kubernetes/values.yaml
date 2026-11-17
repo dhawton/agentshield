@@ -56,6 +56,9 @@ discovery:
     project: ""
     region: ""
     pollInterval: ""
+    # Pub/Sub subscription ID or projects/<project>/subscriptions/<id> fed by
+    # a Cloud Asset Inventory feed. Empty disables change-triggered polls.
+    assetFeedSubscription: ""
 
 telemetry:
   jsonlPath: /var/lib/agentshield/telemetry.jsonl

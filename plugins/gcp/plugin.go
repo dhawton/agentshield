@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"cloud.google.com/go/pubsub/v2"
 	"github.com/agentshield-dev/agentshield/pkg/discovery"
 	"github.com/agentshield-dev/agentshield/pkg/graph"
 )
@@ -22,7 +23,8 @@ const (
 
 // Config configures one project source. ProjectID and ProjectNumber must name
 // the same project, and SourceID should come from [SourceID]. Region is an
-// optional filter for zonal and regional resources.
+// optional filter for zonal and regional resources. AssetFeed is optional;
+// without it the plugin relies on PollInterval alone.
 type Config struct {
 	ProjectID     string
 	ProjectNumber string
@@ -30,11 +32,13 @@ type Config struct {
 	SourceID      string
 	Compute       ComputeAPI
 	PollInterval  time.Duration
+	AssetFeed     AssetFeedReceiver
 }
 
 // Plugin is the GCP Compute Engine source plugin for one project.
 type Plugin struct {
 	config Config
+	feed   *assetFeed
 }
 
 // New validates config and applies the default five-minute poll interval.
@@ -52,7 +56,11 @@ func New(config Config) (*Plugin, error) {
 	if config.PollInterval <= 0 {
 		config.PollInterval = defaultPollInterval
 	}
-	return &Plugin{config: config}, nil
+	plugin := &Plugin{config: config}
+	if config.AssetFeed != nil {
+		plugin.feed = newAssetFeed(config.AssetFeed, assetFilter{projectID: config.ProjectID, projectNumber: config.ProjectNumber, region: config.Region})
+	}
+	return plugin, nil
 }
 
 // SourceID returns gcp/<project-number>, or gcp/<project-number>/<region>
@@ -114,20 +122,20 @@ func (p *Plugin) Run(ctx context.Context, runtime discovery.Runtime) error {
 	var observedAt time.Time
 	ready := false
 	healthy := false
-	retainDegraded := func(candidateErr error) error {
+	retainDegraded := func(candidateErr error) (bool, error) {
 		if !ready {
-			return candidateErr
+			return false, candidateErr
 		}
 		if healthy {
 			generation++
 			if err := p.replace(ctx, runtime, input, generation, observedAt, "degraded"); err != nil {
-				return err
+				return false, err
 			}
 			healthy = false
 		}
-		return nil
+		return false, nil
 	}
-	reconcile := func() error {
+	reconcile := func() (bool, error) {
 		next, captureErr := capture(ctx, p.config.Compute, p.config.SourceID, p.config.ProjectID, p.config.Region)
 		if captureErr != nil {
 			return retainDegraded(captureErr)
@@ -139,14 +147,14 @@ func (p *Plugin) Run(ctx context.Context, runtime discovery.Runtime) error {
 		}
 		generation++
 		if err := p.publishChanges(ctx, runtime, current, next, generation, now); err != nil {
-			return err
+			return false, err
 		}
 		if err := p.replace(ctx, runtime, projected.Input, generation, now, "healthy"); err != nil {
-			return err
+			return false, err
 		}
 		for _, collection := range p.Descriptor().Publishes {
 			if err := runtime.MarkReady(ctx, PluginID, p.config.SourceID, collection, generation); err != nil {
-				return err
+				return false, err
 			}
 		}
 		current = next
@@ -154,19 +162,61 @@ func (p *Plugin) Run(ctx context.Context, runtime discovery.Runtime) error {
 		observedAt = now
 		ready = true
 		healthy = true
-		return nil
+		return true, nil
 	}
-	if err := reconcile(); err != nil {
+	if _, err := reconcile(); err != nil {
 		return err
 	}
 	ticker := time.NewTicker(p.config.PollInterval)
 	defer ticker.Stop()
+	var changes <-chan *pubsub.Message
+	var feedFailures <-chan error
+	if p.feed != nil {
+		failures := make(chan error, 1)
+		changes = p.feed.changes
+		feedFailures = failures
+		go p.feed.run(ctx, failures)
+	}
+	// pending holds feed messages that no committed reconcile covers yet.
+	var pending []*pubsub.Message
+	defer func() {
+		for _, message := range pending {
+			message.Nack()
+		}
+	}()
+	reconcileAndAcknowledge := func() error {
+		committed, err := reconcile()
+		if err != nil || !committed {
+			return err
+		}
+		for _, message := range pending {
+			message.Ack()
+		}
+		pending = nil
+		return nil
+	}
+	var coalesced <-chan time.Time
 	for {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
 		case <-ticker.C:
-			if err := reconcile(); err != nil {
+			if err := reconcileAndAcknowledge(); err != nil {
+				return err
+			}
+		case err := <-feedFailures:
+			return err
+		case message := <-changes:
+			pending = append(pending, message)
+			if coalesced == nil {
+				coalesced = time.After(assetFeedCoalesceWindow)
+			}
+		case <-coalesced:
+			coalesced = nil
+			if len(pending) == 0 {
+				continue
+			}
+			if err := reconcileAndAcknowledge(); err != nil {
 				return err
 			}
 		}

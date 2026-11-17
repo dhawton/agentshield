@@ -4,15 +4,21 @@
 // # Source and collections
 //
 // The plugin polls the Compute Engine instances and subnetworks aggregated
-// list APIs and the firewalls list API with full pagination at startup and
-// every poll interval. It authenticates only with Application Default
-// Credentials, such as GKE Workload Identity, and never reads key files. All
-// three calls must succeed, and an aggregated list that reports unreachable
-// scopes fails the poll, so a snapshot is never partial. Each object is
-// content-digested so retries keep stable event IDs, and the plugin publishes
-// the gcp/compute/instances, firewalls, and subnetworks collections keyed by
-// numeric resource ID. An optional region filter limits instances and
-// subnetworks; firewall rules are global and always read.
+// list APIs and the firewalls list API with full pagination at startup, every
+// poll interval, and shortly after an optional Cloud Asset Inventory feed
+// reports a change. Polling, not the feed, is authoritative: a feed message
+// for an instance, firewall, or subnetwork in this source's project and region
+// only triggers a full poll, a burst of messages coalesces into one poll, and
+// messages are acked only after a poll commits. Malformed messages and other
+// asset types, projects, and regions are acked without polling. The plugin
+// authenticates only with Application Default Credentials, such as GKE
+// Workload Identity, and never reads key files. All three calls must succeed,
+// and an aggregated list that reports unreachable scopes fails the poll, so a
+// snapshot is never partial. Each object is content-digested so retries keep
+// stable event IDs, and the plugin publishes the gcp/compute/instances,
+// firewalls, and subnetworks collections keyed by numeric resource ID. An
+// optional region filter limits instances and subnetworks; firewall rules are
+// global and always read.
 //
 // # Identity
 //
@@ -45,7 +51,9 @@
 // Shared VPC host project outside this source are not read. An initial API
 // failure prevents readiness. After a coherent publication, a failed poll
 // republishes the last coherent input once with degraded health; recovery
-// restores healthy status.
+// restores healthy status. Feed messages held across a failed poll stay
+// unacked until a later poll commits. A subscription error that Pub/Sub does
+// not retry, such as a missing subscription, stops the plugin.
 //
 // See https://agent-shield.dev/docs/plugins/gcp/.
 package gcp
